@@ -1642,7 +1642,10 @@ def write_spectral_fitting_3panel_plot(
             sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=18, cmap=cmap)
         else:
             cmap = "viridis"
-            sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=18, cmap=cmap)
+            vmin_val = np.nanpercentile(values, 5)
+            vmax_val = np.nanpercentile(values, 95)
+            sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=18, cmap=cmap, 
+                            vmin=vmin_val, vmax=vmax_val)
         ax.set_title(title, fontsize=14)
         ax.set_xlabel("Longitude", fontsize=12)
         ax.set_ylabel("Latitude", fontsize=12)
@@ -1652,7 +1655,7 @@ def write_spectral_fitting_3panel_plot(
             cbar_label = "fraction"
         else:
             cbar_label = "value"
-        cb = fig.colorbar(sc, ax=ax, fraction=0.060, pad=0.04 )
+        cb = fig.colorbar(sc, ax=ax, fraction=0.060, pad=0.04)
         cb.ax.tick_params(labelsize=10)
         cb.set_label(cbar_label, fontsize=12)
         
