@@ -1,0 +1,49 @@
+# Data and outputs
+data/
+outputs/
+
+# Internal planning docs
+prompts/
+
+# Binary / large science file formats
+*.nc
+*.nc4
+*.h5
+*.hdf5
+*.npz
+*.npy
+*.par
+
+# Plots
+*.png
+*.pdf
+*.svg
+
+# Agent and IDE config
+.claude/
+.vscode/
+.cursor/
+.codex/
+.continue/
+.copilot/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyo
+
+# Environments
+.env
+.venv/
+env/
+venv/
+
+# OS
+.DS_Store
