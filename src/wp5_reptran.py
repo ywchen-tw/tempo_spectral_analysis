@@ -472,18 +472,63 @@ def _compute_tau_lookup_gas(
     n_bands = len(meta["band_point_weights"])
     tau_bands = np.zeros(n_bands, dtype=float)
 
+    # Unpack interpolation state once for the vectorised inner loop.
+    xsec_arr = lookup["xsec"]  # (n_t_pert, n_vmrs, nwvl, n_pressure)
+    il, ih, wp_p = state["ip_lo"], state["ip_hi"], state["wp"]
+    it_ll, it_hl, wt_l = state["it_lo_lo"], state["it_hi_lo"], state["wt_lo"]
+    it_lh, it_hh, wt_h = state["it_lo_hi"], state["it_hi_hi"], state["wt_hi"]
+    single_vmr = state["single_vmr"]
+    if not single_vmr:
+        iv_lo_s, iv_hi_s, wv_s = state["iv_lo"], state["iv_hi"], state["wv"]
+
     for b, (loc_map, weights) in enumerate(zip(band_loc_maps, meta["band_point_weights"])):
         valid_mask = loc_map >= 0
         if not np.any(valid_mask):
             continue
-        w_valid = np.asarray(weights, dtype=float)[valid_mask]
-        w_sum = float(np.sum(w_valid))
+        loc_valid = loc_map[valid_mask]              # (n_pts,)
+        w_valid   = np.asarray(weights, dtype=float)[valid_mask]
+        w_sum     = float(np.sum(w_valid))
         if w_sum <= 0:
             continue
-        tau_pts = np.empty(int(np.sum(valid_mask)), dtype=float)
-        for j, loc_idx in enumerate(loc_map[valid_mask]):
-            k = _interp_xsec_layers(lookup, state, int(loc_idx))
-            tau_pts[j] = float(np.nansum(k * col_factor))
+
+        # Vectorised lookup over all band-points (n_pts) and layers (n_lay) at once.
+        # xsec dims: (n_t_pert, n_vmrs, nwvl, n_pressure).
+        # For single-VMR gases (O2/N2/N2O) dims 0,2,3 are advanced and dim 1 is a
+        # basic scalar; NumPy places the broadcast advanced shape (n_lay, n_pts) first.
+        if single_vmr:
+            v = 0
+            k_lo = (
+                (1 - wt_l[:, None]) * xsec_arr[it_ll[:, None], v, loc_valid[None, :], il[:, None]] +
+                wt_l[:, None]       * xsec_arr[it_hl[:, None], v, loc_valid[None, :], il[:, None]]
+            )
+            k_hi = (
+                (1 - wt_h[:, None]) * xsec_arr[it_lh[:, None], v, loc_valid[None, :], ih[:, None]] +
+                wt_h[:, None]       * xsec_arr[it_hh[:, None], v, loc_valid[None, :], ih[:, None]]
+            )
+        else:
+            # H2O: all four dims are advanced → unambiguous (n_lay, n_pts) result.
+            k_lo_lo = (
+                (1 - wt_l[:, None]) * xsec_arr[it_ll[:, None], iv_lo_s[:, None], loc_valid[None, :], il[:, None]] +
+                wt_l[:, None]       * xsec_arr[it_hl[:, None], iv_lo_s[:, None], loc_valid[None, :], il[:, None]]
+            )
+            k_lo_hi = (
+                (1 - wt_l[:, None]) * xsec_arr[it_ll[:, None], iv_hi_s[:, None], loc_valid[None, :], il[:, None]] +
+                wt_l[:, None]       * xsec_arr[it_hl[:, None], iv_hi_s[:, None], loc_valid[None, :], il[:, None]]
+            )
+            k_hi_lo = (
+                (1 - wt_h[:, None]) * xsec_arr[it_lh[:, None], iv_lo_s[:, None], loc_valid[None, :], ih[:, None]] +
+                wt_h[:, None]       * xsec_arr[it_hh[:, None], iv_lo_s[:, None], loc_valid[None, :], ih[:, None]]
+            )
+            k_hi_hi = (
+                (1 - wt_h[:, None]) * xsec_arr[it_lh[:, None], iv_hi_s[:, None], loc_valid[None, :], ih[:, None]] +
+                wt_h[:, None]       * xsec_arr[it_hh[:, None], iv_hi_s[:, None], loc_valid[None, :], ih[:, None]]
+            )
+            k_lo = (1 - wv_s[:, None]) * k_lo_lo + wv_s[:, None] * k_lo_hi
+            k_hi = (1 - wv_s[:, None]) * k_hi_lo + wv_s[:, None] * k_hi_hi
+
+        # k_interp: (n_lay, n_pts) in cm²/molecule
+        k_interp  = ((1 - wp_p[:, None]) * k_lo + wp_p[:, None] * k_hi).astype(float) * _XSEC_UNIT
+        tau_pts   = np.nansum(k_interp * col_factor[:, None], axis=0)    # (n_pts,)
         tau_bands[b] = float(np.nansum(tau_pts * w_valid) / w_sum)
 
     return tau_bands

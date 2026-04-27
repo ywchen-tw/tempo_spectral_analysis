@@ -6,12 +6,12 @@ See [`prompts/TEMPO_pipeline_plan.md`](prompts/TEMPO_pipeline_plan.md) for the f
 
 ## Pipelines
 
-| Script | Band | λ range | Tau physics |
-|---|---|---|---|
-| `scripts/run_o2o2_pipeline_subset.py` | O2-O2 CIA | 460–490 nm | τ ∝ n_O2² (CIA); cross-sections from pre-measured .xs tables |
-| `scripts/run_o2b_pipeline_subset.py` | O2 B-band | 683–697 nm | τ ∝ n_O2 (monomer); HITRAN line-by-line Voigt profiles |
+| Script | Band | λ range | Tau physics | Fitting |
+|---|---|---|---|---|
+| `scripts/run_o2o2_pipeline_subset.py` | O2-O2 CIA | 460–490 nm | τ ∝ n_O2² (CIA); cross-sections from pre-measured .xs tables | five modes |
+| `scripts/run_o2b_pipeline_subset.py` | O2 B-band | 683–697 nm | τ ∝ n_O2 (monomer); HITRAN line-by-line Voigt profiles | Mode 2 only |
 
-Both scripts run WP1–WP7 end-to-end on any geographic bbox or scan/xtrack subset.
+Both scripts run WP1–WP7 end-to-end on any geographic bbox or scan/xtrack subset.  The O2-B script automatically downloads a GOES ABI true-colour satellite image and includes it as the leftmost panel in the diagnostic plot.
 
 ## Environment
 
@@ -78,7 +78,8 @@ src/
   wp4_o2b_tau.py          O2 B-band HITRAN line-by-line tau + H2O
   wp5_reptran.py          REPTRAN k-distribution gas tau (H2O, O2, N2, N2O, NO2, O3)
   wp6_validation.py       comparison with CLDO4 fitted slant column
-  wp7_spectral_fitting.py cumulant expansion spectral fitting (five modes) + plots
+  wp7_spectral_fitting.py cumulant expansion spectral fitting (five modes) + 4-panel plots
+  goes_abi_rgb.py         GOES-East/West ABI true-colour RGB download (NOAA S3)
   chunk_merge.py          gap detection, merge, validation across chunks
   constants.py            physical constants
   io_tempo.py             low-level TEMPO/GEOS-CF file readers
@@ -90,3 +91,5 @@ src/
 - Pressure profile uses sigma-based reconstruction from `PS` (hybrid coefficients absent from this granule).
 - Wavecal: `λ_corr(m,x,s) = nominal_wavelength(x,s) + wavecal_params(m,x,0)`; only `wavecal_opt_status==0` pixels used by default.
 - O2 is excluded from the REPTRAN composite tau in the O2-B pipeline to avoid double-counting with the HITRAN WP4 tau.
+- WP4 slit convolution is cached per xtrack column; WP5 band-point lookups are vectorised — both avoid per-pixel Python loops over layers/band-points.
+- GOES ABI download requires anonymous S3 access (`s3fs`); images are cached as PNGs and reused on subsequent runs.

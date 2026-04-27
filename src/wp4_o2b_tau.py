@@ -367,6 +367,45 @@ def _slit_convolve_and_sample(
     return sigma_on_tempo
 
 
+def _slit_convolve_hi(
+    sigma_hi: np.ndarray,
+    kernel_hi: np.ndarray,
+) -> np.ndarray:
+    """FFT-convolve each temperature row with the slit kernel on the high-res grid.
+
+    Returns (n_T, n_wl_hi) — does not yet sample at TEMPO wavelengths.
+    Call once per unique xtrack; cache the result and sample per-pixel via
+    _sample_sigma_at_tempo (cheap np.interp) rather than repeating the FFT.
+    """
+    return np.vstack([
+        fftconvolve(sigma_hi[k], kernel_hi, mode="same")
+        for k in range(sigma_hi.shape[0])
+    ])
+
+
+def _sample_sigma_at_tempo(
+    conv_hi: np.ndarray,
+    wl_hires: np.ndarray,
+    wl_tempo: np.ndarray,
+) -> np.ndarray:
+    """Sample already-convolved high-res sigma rows at TEMPO wavelengths.
+
+    Parameters
+    ----------
+    conv_hi  : (n_T, n_wl_hi)  output of _slit_convolve_hi
+    wl_hires : (n_wl_hi,)      uniform high-res wavelength grid (nm)
+    wl_tempo : (n_wl_tempo,)   per-pixel TEMPO wavelengths (nm)
+
+    Returns
+    -------
+    (n_T, n_wl_tempo)
+    """
+    out = np.empty((conv_hi.shape[0], wl_tempo.size), dtype=float)
+    for k in range(conv_hi.shape[0]):
+        out[k] = np.interp(wl_tempo, wl_hires, conv_hi[k], left=0.0, right=0.0)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Main tau computation
 # ---------------------------------------------------------------------------
@@ -461,6 +500,28 @@ def compute_tau_subset_o2b(
     tau_band_mean_rows: list[float] = []
     sec_airmass_rows: list[float]  = []
 
+    # Pre-compute FFT slit convolution on the high-res grid for each unique xtrack.
+    # The kernel depends only on xtrack, not on scan position, so this amortises
+    # n_T FFTs per xtrack across every scan row sharing that column.
+    # Per-pixel work is then a cheap np.interp sample at the TEMPO wavelengths.
+    xtrack_conv_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    n_layers = n_o2_cm3_all.shape[1]
+    for xt in pixel_df["xtrack"].unique():
+        xt = int(xt)
+        if xt not in slit_lookup.index:
+            continue
+        slit_row  = slit_lookup.loc[xt]
+        kernel_hi = _build_hires_slit_kernel(
+            hw1e_nm = float(slit_row["kernel_hw1e_nm"]),
+            shape   = float(slit_row["kernel_shape"]),
+            asym_nm = float(slit_row["kernel_asym_nm"]),
+            n_sigma = cfg.n_sigma_kernel,
+        )
+        xtrack_conv_cache[xt] = (
+            _slit_convolve_hi(sigma_hi_o2b, kernel_hi),
+            _slit_convolve_hi(sigma_hi_h2o, kernel_hi),
+        )
+
     for i, row in pixel_df.reset_index(drop=True).iterrows():
         if not bool(row["valid_pixel"]):
             continue
@@ -477,38 +538,33 @@ def compute_tau_subset_o2b(
         wl_nm = wl_nm[np.isfinite(wl_nm)]
         if wl_nm.size < 3:
             continue
-        if row["xtrack"] not in slit_lookup.index:
+        xt = int(row["xtrack"])
+        if xt not in xtrack_conv_cache:
             continue
+        conv_o2b_hi, conv_h2o_hi = xtrack_conv_cache[xt]
 
-        slit_row  = slit_lookup.loc[int(row["xtrack"])]
-        kernel_hi = _build_hires_slit_kernel(
-            hw1e_nm = float(slit_row["kernel_hw1e_nm"]),
-            shape   = float(slit_row["kernel_shape"]),
-            asym_nm = float(slit_row["kernel_asym_nm"]),
-            n_sigma = cfg.n_sigma_kernel,
-        )
+        # Sample the cached convolved sigma at this pixel's wavecal-corrected TEMPO grid
+        sigma_o2b_tempo = _sample_sigma_at_tempo(conv_o2b_hi, wl_hires_o2b, wl_nm)
+        sigma_h2o_tempo = _sample_sigma_at_tempo(conv_h2o_hi, wl_hires_h2o, wl_nm)
 
-        # Convolve + sample for both species (n_T FFTs each, once per pixel)
-        sigma_o2b_tempo = _slit_convolve_and_sample(sigma_hi_o2b, wl_hires_o2b, kernel_hi, wl_nm)
-        sigma_h2o_tempo = _slit_convolve_and_sample(sigma_hi_h2o, wl_hires_h2o, kernel_hi, wl_nm)
+        # Vectorised temperature interpolation over all layers at once.
+        # sigma_*_tempo: (n_T, n_wl);  index with (n_layers,) → (n_layers, n_wl)
+        t_layers = t_k_all[i]                                              # (n_layers,)
+        t_clip   = np.clip(t_layers, temps_k[0], temps_k[-1])
+        hi_t     = np.searchsorted(temps_k, t_clip, side="right").clip(1, len(temps_k) - 1)
+        lo_t     = hi_t - 1
+        span_t   = temps_k[hi_t] - temps_k[lo_t]
+        w_t      = np.where(span_t > 0, (t_clip - temps_k[lo_t]) / span_t, 0.0)
 
-        n_layers = n_o2_cm3_all.shape[1]
-        tau_o2b_layer = np.zeros((n_layers, wl_nm.size), dtype=float)
-        tau_h2o_layer = np.zeros((n_layers, wl_nm.size), dtype=float)
+        sig_o2b_layers = (1 - w_t[:, None]) * sigma_o2b_tempo[lo_t] + w_t[:, None] * sigma_o2b_tempo[hi_t]
+        sig_h2o_layers = (1 - w_t[:, None]) * sigma_h2o_tempo[lo_t] + w_t[:, None] * sigma_h2o_tempo[hi_t]
+        np.nan_to_num(sig_o2b_layers, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(sig_h2o_layers, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-        for lev in range(n_layers):
-            t_lev = float(t_k_all[i, lev])
-
-            sig_o2b = _interpolate_sigma_temperature(t_lev, sigma_o2b_tempo, temps_k)
-            sig_o2b = np.nan_to_num(sig_o2b, nan=0.0, posinf=0.0, neginf=0.0)
-            tau_o2b_layer[lev] = sig_o2b * n_o2_cm3_all[i, lev] * dz_cm_all[i, lev]
-
-            sig_h2o = _interpolate_sigma_temperature(t_lev, sigma_h2o_tempo, temps_k)
-            sig_h2o = np.nan_to_num(sig_h2o, nan=0.0, posinf=0.0, neginf=0.0)
-            tau_h2o_layer[lev] = sig_h2o * n_h2o_cm3_all[i, lev] * dz_cm_all[i, lev]
-
-        tau_vert    = np.nansum(tau_o2b_layer, axis=0)
-        tau_h2o_vert = np.nansum(tau_h2o_layer, axis=0)
+        col_o2b = n_o2_cm3_all[i] * dz_cm_all[i]   # (n_layers,)
+        col_h2o = n_h2o_cm3_all[i] * dz_cm_all[i]
+        tau_vert     = np.sum(sig_o2b_layers * col_o2b[:, None], axis=0)  # (n_wl,)
+        tau_h2o_vert = np.sum(sig_h2o_layers * col_h2o[:, None], axis=0)
 
         sec_airmass = (
             1.0 / np.cos(np.deg2rad(float(row["sza_deg"])))

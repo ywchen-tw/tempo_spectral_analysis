@@ -295,15 +295,6 @@ def main() -> int:
 
     validation_csv, validation_md = write_validation_outputs(validation_prefix, validation_table)
 
-    # ── WP5 Rayleigh projection onto REPTRAN grid ─────────────────────────────
-    tau_rayleigh_proj = project_tau_to_reptran(
-        tau_result={
-            "wavelength_nm": tau_result["wavelength_nm"],
-            "tau_eff":       tau_result["tau_rayleigh_eff"],
-        },
-        reptran_cfg=reptran_cfg,
-    )
-
     # ── WP7: Spectral fitting ─────────────────────────────────────────────────
     spectral_fitting_order = int(args.spectral_fit_order)
     obs_ln_T_native = extract_observed_lnT(
