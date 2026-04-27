@@ -1562,13 +1562,22 @@ def write_spectral_fitting_3panel_plot(
     output_dir,
     tag="",
     cf_threshold=0.2,
+    rad_file=None,
 ):
-    """Write a 4-panel geographic scatter: NO2, cloud fraction, fitted k1, fitted k2.
+    """Write a geographic scatter figure: optional GOES RGB + cloud fraction + k1 + k2.
 
-    Each panel plots pixels as scatter(lon, lat) coloured by the panel value.
-    Pixels without a successful fit are excluded from the k1/k2 panels but
-    still appear in the geophysical context panels for spatial comparison.
+    When *rad_file* is provided the UTC scan time is parsed from its filename
+    and a GOES ABI true-colour panel is prepended on the left.  The GOES PNG
+    is cached in *output_dir* so repeated calls reuse the same download.
+
+    Each scatter panel plots pixels coloured by the panel value.  Pixels
+    without a successful fit are excluded from k1/k2 panels but still appear
+    in the cloud-fraction panel for spatial context.
     """
+    import re
+    import sys
+    from pathlib import Path as _Path
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1622,15 +1631,58 @@ def write_spectral_fitting_3panel_plot(
     k1 = np.where(cloud_mask, np.nan, k1)
     k2 = np.where(cloud_mask, np.nan, k2)
 
-    fig, axes = plt.subplots(1, 3 , figsize=(20, 5), constrained_layout=True)
+    # ── Optional GOES panel ───────────────────────────────────────────────────
+    goes_img    = None
+    goes_extent = None
+    goes_title  = "GOES ABI RGB"
+
+    if rad_file is not None:
+        m = re.search(r'(\d{8}T\d{6}Z)', str(rad_file))
+        if m:
+            utc_time = pd.Timestamp(m.group(1), tz='UTC')
+
+            fin_lon = subset_lon[np.isfinite(subset_lon)]
+            fin_lat = subset_lat[np.isfinite(subset_lat)]
+            if fin_lon.size > 0 and fin_lat.size > 0:
+                pad = 0.5
+                goes_extent = [
+                    float(fin_lon.min()) - pad, float(fin_lon.max()) + pad,
+                    float(fin_lat.min()) - pad, float(fin_lat.max()) + pad,
+                ]
+                try:
+                    _src = str(_Path(__file__).parent)
+                    if _src not in sys.path:
+                        sys.path.insert(0, _src)
+                    from goes_abi_rgb import download_goes_abi_rgb
+                    png_path, sat_label, scan_time = download_goes_abi_rgb(
+                        utc_time  = utc_time,
+                        extent    = goes_extent,
+                        fdir      = str(output_dir),
+                        run       = True,
+                    )
+                    goes_img   = plt.imread(png_path)
+                    dt_min     = abs((scan_time - utc_time).total_seconds()) / 60
+                    goes_title = (f"GOES-{sat_label.upper()} ABI RGB\n"
+                                  f"{scan_time.strftime('%H:%M UTC')}  "
+                                  f"(Δt={dt_min:.1f} min)")
+                except Exception as exc:
+                    print(f"  Warning: GOES download skipped ({exc})", flush=True)
+
+    # ── Figure layout ─────────────────────────────────────────────────────────
+    n_panels   = 4 if goes_img is not None else 3
+    fig_width  = 7 * n_panels
+    fig, axes  = plt.subplots(1, n_panels, figsize=(fig_width, 5),
+                               constrained_layout=True)
+
+    scatter_axes = axes[1:] if goes_img is not None else axes
+
     panels = [
-        # (subset_lon, subset_lat, no2_proxy, "NO2 vertical column (troposphere + stratosphere)"),
         (subset_lon, subset_lat, cloud_fraction, "Cloud fraction"),
         (fit_lon, fit_lat, k1, f"Fitted <l'> (order {fit_order})"),
         (fit_lon, fit_lat, k2, f"Fitted var(l') (order {fit_order})"),
     ]
-    
-    for ax, (lon, lat, values, title) in zip(axes, panels):
+
+    for ax, (lon, lat, values, title) in zip(scatter_axes, panels):
         finite = np.isfinite(values) & np.isfinite(lon) & np.isfinite(lat)
         if title == "Cloud fraction":
             sc = ax.scatter(
@@ -1638,33 +1690,49 @@ def write_spectral_fitting_3panel_plot(
                 s=18, cmap="Blues_r", vmin=0, vmax=1,
             )
         elif title.startswith("NO2"):
-            cmap = "Reds"
-            sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=18, cmap=cmap)
+            sc = ax.scatter(lon[finite], lat[finite], c=values[finite],
+                            s=18, cmap="Reds")
         else:
-            cmap = "viridis"
-            vmin_val = np.nanpercentile(values, 5)
-            vmax_val = np.nanpercentile(values, 95)
-            sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=18, cmap=cmap, 
-                            vmin=vmin_val, vmax=vmax_val)
+            vmin_val = np.nanpercentile(values[finite], 5) if finite.any() else 0
+            vmax_val = np.nanpercentile(values[finite], 95) if finite.any() else 1
+            sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=18,
+                            cmap="viridis", vmin=vmin_val, vmax=vmax_val)
         ax.set_title(title, fontsize=14)
         ax.set_xlabel("Longitude", fontsize=12)
         ax.set_ylabel("Latitude", fontsize=12)
-        if title.startswith("NO2"):
-            cbar_label = "molecules/cm$^2$"
-        elif title == "Cloud fraction":
-            cbar_label = "fraction"
-        else:
-            cbar_label = "value"
+        cbar_label = ("molecules/cm$^2$" if title.startswith("NO2")
+                      else "fraction" if title == "Cloud fraction"
+                      else "value")
         cb = fig.colorbar(sc, ax=ax, fraction=0.060, pad=0.04)
         cb.ax.tick_params(labelsize=10)
         cb.set_label(cbar_label, fontsize=12)
-        
-    xmin, xmax = axes[2].get_xlim()
-    ymin, ymax = axes[2].get_ylim()
-    for ax in axes:
+
+    # Align all scatter panels to the same lon/lat range
+    ref_ax = scatter_axes[-1]
+    xmin, xmax = ref_ax.get_xlim()
+    ymin, ymax = ref_ax.get_ylim()
+    for ax in scatter_axes:
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
         ax.tick_params(axis='both', which='major', labelsize=10)
+
+    # ── GOES panel (leftmost) ─────────────────────────────────────────────────
+    if goes_img is not None:
+        ax0 = axes[0]
+        ax0.imshow(goes_img,
+                   extent=[goes_extent[0], goes_extent[1],
+                           goes_extent[2], goes_extent[3]],
+                   aspect='auto', origin='upper')
+        # Overlay TEMPO pixel footprint
+        # fp_finite = np.isfinite(subset_lon) & np.isfinite(subset_lat)
+        # ax0.scatter(subset_lon[fp_finite], subset_lat[fp_finite],
+        #             s=4, c='yellow', alpha=0.4, linewidths=0)
+        ax0.set_xlim(xmin, xmax)
+        ax0.set_ylim(ymin, ymax)
+        ax0.set_title(goes_title, fontsize=11)
+        ax0.set_xlabel("Longitude", fontsize=12)
+        ax0.set_ylabel("Latitude", fontsize=12)
+        ax0.tick_params(axis='both', which='major', labelsize=10)
 
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

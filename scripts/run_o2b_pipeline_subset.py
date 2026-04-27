@@ -48,7 +48,6 @@ from wp4_o2b_tau import (
     write_o2b_tau_netcdf,
     write_o2b_vertical_debug_plot,
 )
-from wp4_tau import write_tau_netcdf  # reused for Rayleigh-only NC if needed
 from wp5_reptran import (
     ReptranConfig,
     compute_tau_reptran_from_profiles,
@@ -59,15 +58,12 @@ from wp5_reptran import (
 from wp6_validation import build_validation_table, write_validation_outputs
 from wp7_spectral_fitting import (
     build_ring_template_from_irr,
-    compute_residual_lnT,
     compute_ring_optical_depth,
     extract_observed_lnT,
     fit_pixel_ensemble,
-    write_tau_component_examples,
     write_lnT_tau_examples,
     write_spectral_fitting_outputs,
     write_spectral_fitting_3panel_plot,
-    write_transmittance_wavelength_examples,
 )
 
 
@@ -425,8 +421,6 @@ def main() -> int:
             "ring_basis":    np.vstack(fit_ring_rows),
         }
         tau_mode2 = np.vstack(fit_tau_total_rows)
-        tau_mode3 = tau_fit["tau_eff"]
-        tau_mode4 = np.vstack(fit_tau_rayleigh_rows)
         obs_ln_T_fit = np.vstack(fit_lnT_rows)
     else:
         tau_fit = {
@@ -435,7 +429,7 @@ def main() -> int:
             "tau_eff":       np.empty((0, 0), dtype=float),
             "ring_basis":    np.empty((0, 0), dtype=float),
         }
-        tau_mode2 = tau_mode3 = tau_mode4 = obs_ln_T_fit = np.empty((0, 0), dtype=float)
+        tau_mode2 = obs_ln_T_fit = np.empty((0, 0), dtype=float)
 
     if skipped_bad_quality:
         print(f"Skipped {skipped_bad_quality} bad-quality pixels before spectral fitting.")
@@ -443,69 +437,6 @@ def main() -> int:
         print(f"Skipped {skipped_cloudy} cloudy pixels (CF > {args.cf_threshold}) before spectral fitting.")
 
     spectral_output_dir = qc_dir
-    spectral_tag = f"_{chunk_tag}_o2b_tau_total_eff"
-
-    fitting_result = fit_pixel_ensemble(
-        tau_fit, pix, fit_order=spectral_fitting_order, obs_ln_T=obs_ln_T_fit
-    )
-    spectral_paths = write_spectral_fitting_outputs(
-        fitting_result, spectral_fitting_order, spectral_output_dir, tag=spectral_tag
-    )
-    spectral_plot = write_spectral_fitting_3panel_plot(
-        fitting_result=fitting_result,
-        pixel_table=pix,
-        cldo4_file=args.cldo4_file,
-        no2_file=args.no2_file,
-        fit_order=spectral_fitting_order,
-        wl_min_nm=args.wl_min,
-        wl_max_nm=args.wl_max,
-        output_dir=spectral_output_dir,
-        tag=spectral_tag,
-        cf_threshold=args.cf_threshold,
-    )
-    lnT_plot = write_lnT_tau_examples(
-        tau_result=tau_fit,
-        fitting_result=fitting_result,
-        fit_order=spectral_fitting_order,
-        output_dir=spectral_output_dir,
-        n_examples=4,
-        tag=spectral_tag,
-        obs_ln_T=obs_ln_T_fit,
-    )
-    tau_components_plot = write_tau_component_examples(
-        fitting_result=fitting_result,
-        reptran_o2o2_result=reptran_result,
-        reptran_rayleigh_result=tau_rayleigh_proj,
-        reptran_gas_result=reptran_gas_result,
-        reptran_o2o2_pixel_index=tau_result["pixel_index"],
-        reptran_rayleigh_pixel_index=tau_result["pixel_index"],
-        output_dir=spectral_output_dir,
-        n_examples=4,
-        tag=spectral_tag,
-        ring_tau=ring_template_rep,
-        tau_result=tau_result,
-    )
-    tau_components_no_rayleigh_plot = write_tau_component_examples(
-        fitting_result=fitting_result,
-        reptran_o2o2_result=reptran_result,
-        reptran_rayleigh_result=tau_rayleigh_proj,
-        reptran_gas_result=reptran_gas_result,
-        reptran_o2o2_pixel_index=tau_result["pixel_index"],
-        reptran_rayleigh_pixel_index=tau_result["pixel_index"],
-        output_dir=spectral_output_dir,
-        n_examples=4,
-        tag=spectral_tag,
-        include_rayleigh=False,
-        tau_result=tau_result,
-    )
-    transmittance_plot = write_transmittance_wavelength_examples(
-        tau_result=tau_fit,
-        fitting_result=fitting_result,
-        output_dir=spectral_output_dir,
-        n_examples=4,
-        tag=spectral_tag,
-        obs_ln_T=obs_ln_T_fit,
-    )
 
     # ── Mode 2: total tau (O2-B + sec-gases + Rayleigh + Ring) ───────────────
     tag_m2 = f"_{chunk_tag}_o2b_simple_total"
@@ -520,6 +451,7 @@ def main() -> int:
         fit_order=spectral_fitting_order, wl_min_nm=args.wl_min, wl_max_nm=args.wl_max,
         output_dir=spectral_output_dir, tag=tag_m2,
         cf_threshold=args.cf_threshold,
+        rad_file=args.rad_file,
     )
     write_lnT_tau_examples(
         tau_result=tau_fit, fitting_result=fitting_result_m2,
@@ -527,81 +459,6 @@ def main() -> int:
         n_examples=4, tag=tag_m2, obs_ln_T=obs_ln_T_fit,
         tau_simple=tau_mode2,
         tau_x_label="τ_total (O₂-B + H₂O + NO₂ + O₃ + Rayleigh + Ring)",
-    )
-
-    # ── Mode 4: gas + Rayleigh (no Ring) ─────────────────────────────────────
-    tag_m4 = f"_{chunk_tag}_o2b_simple_gas_rayleigh"
-    fitting_result_m4 = fit_pixel_ensemble(
-        tau_fit, pix, fit_order=spectral_fitting_order,
-        obs_ln_T=obs_ln_T_fit, fit_mode="simple", tau_simple=tau_mode4,
-    )
-    write_spectral_fitting_outputs(fitting_result_m4, spectral_fitting_order, spectral_output_dir, tag=tag_m4)
-    write_spectral_fitting_3panel_plot(
-        fitting_result=fitting_result_m4, pixel_table=pix,
-        cldo4_file=args.cldo4_file, no2_file=args.no2_file,
-        fit_order=spectral_fitting_order, wl_min_nm=args.wl_min, wl_max_nm=args.wl_max,
-        output_dir=spectral_output_dir, tag=tag_m4,
-        cf_threshold=args.cf_threshold,
-    )
-    lnT_plot_m4 = write_lnT_tau_examples(
-        tau_result=tau_fit, fitting_result=fitting_result_m4,
-        fit_order=spectral_fitting_order, output_dir=spectral_output_dir,
-        n_examples=4, tag=tag_m4, obs_ln_T=obs_ln_T_fit,
-        tau_simple=tau_mode4,
-        tau_x_label="τ_gas+Rayleigh (O₂-B + H₂O + NO₂ + O₃ + Rayleigh)",
-    )
-
-    # ── Mode 3: gas only (O2-B + secondary gases) ────────────────────────────
-    tag_m3 = f"_{chunk_tag}_o2b_simple_gas"
-    fitting_result_m3 = fit_pixel_ensemble(
-        tau_fit, pix, fit_order=spectral_fitting_order,
-        obs_ln_T=obs_ln_T_fit, fit_mode="simple", tau_simple=tau_mode3,
-    )
-    write_spectral_fitting_outputs(fitting_result_m3, spectral_fitting_order, spectral_output_dir, tag=tag_m3)
-    write_spectral_fitting_3panel_plot(
-        fitting_result=fitting_result_m3, pixel_table=pix,
-        cldo4_file=args.cldo4_file, no2_file=args.no2_file,
-        fit_order=spectral_fitting_order, wl_min_nm=args.wl_min, wl_max_nm=args.wl_max,
-        output_dir=spectral_output_dir, tag=tag_m3,
-        cf_threshold=args.cf_threshold,
-    )
-    write_lnT_tau_examples(
-        tau_result=tau_fit, fitting_result=fitting_result_m3,
-        fit_order=spectral_fitting_order, output_dir=spectral_output_dir,
-        n_examples=4, tag=tag_m3, obs_ln_T=obs_ln_T_fit,
-        tau_simple=tau_mode3,
-        tau_x_label="τ_gas (O₂-B + H₂O + NO₂ + O₃)",
-    )
-
-    # ── Mode 5: gas tau + linear-detrended residual lnT ──────────────────────
-    residual_ln_T_fit = compute_residual_lnT(
-        obs_ln_T=obs_ln_T_fit,
-        wavelength_nm=tau_fit["wavelength_nm"],
-    )
-    tag_m5 = f"_{chunk_tag}_o2b_simple_gas_residual"
-    fitting_result_m5 = fit_pixel_ensemble(
-        tau_fit, pix, fit_order=spectral_fitting_order,
-        obs_ln_T=residual_ln_T_fit, fit_mode="simple", tau_simple=tau_mode3,
-    )
-    write_spectral_fitting_outputs(fitting_result_m5, spectral_fitting_order, spectral_output_dir, tag=tag_m5)
-    spectral_plot_m5 = write_spectral_fitting_3panel_plot(
-        fitting_result=fitting_result_m5, pixel_table=pix,
-        cldo4_file=args.cldo4_file, no2_file=args.no2_file,
-        fit_order=spectral_fitting_order, wl_min_nm=args.wl_min, wl_max_nm=args.wl_max,
-        output_dir=spectral_output_dir, tag=tag_m5,
-        cf_threshold=args.cf_threshold,
-    )
-    lnT_plot_m5 = write_lnT_tau_examples(
-        tau_result=tau_fit, fitting_result=fitting_result_m5,
-        fit_order=spectral_fitting_order, output_dir=spectral_output_dir,
-        n_examples=4, tag=tag_m5, obs_ln_T=residual_ln_T_fit,
-        tau_simple=tau_mode3,
-        tau_x_label="τ_gas (O₂-B + H₂O + NO₂ + O₃)",
-    )
-    residual_transmittance_plot = write_transmittance_wavelength_examples(
-        tau_result=tau_fit, fitting_result=fitting_result_m5,
-        output_dir=spectral_output_dir, n_examples=4,
-        tag=tag_m5, obs_ln_T=residual_ln_T_fit,
     )
 
     valid_n = int(pix["valid_pixel"].sum())
@@ -622,18 +479,6 @@ def main() -> int:
     print(f"Wrote: {reptran_summary_csv}")
     print(f"Wrote: {validation_csv}")
     print(f"Wrote: {validation_md}")
-    print(f"Wrote: {spectral_paths['csv']}")
-    print(f"Wrote: {spectral_paths['h5']}")
-    print(f"Wrote: {spectral_paths['md']}")
-    print(f"Wrote: {spectral_plot}")
-    print(f"Wrote: {lnT_plot}")
-    print(f"Wrote: {tau_components_plot}")
-    print(f"Wrote: {tau_components_no_rayleigh_plot}")
-    print(f"Wrote: {lnT_plot_m4}")
-    print(f"Wrote: {transmittance_plot}")
-    print(f"Wrote: {spectral_plot_m5}")
-    print(f"Wrote: {lnT_plot_m5}")
-    print(f"Wrote: {residual_transmittance_plot}")
     print(f"Valid pixels: {valid_n}/{total_n}")
     return 0
 
@@ -659,4 +504,41 @@ python scripts/run_o2b_pipeline_subset.py \
     --irr-file data/TEMPO/TEMPO_IRR_L1_V03_20240711T042711Z.nc \
     --geos-file data/TEMPO/GEOS-CF.v01.rpl.sat_inst_1hr_r721x361_v72.20240708_1600z.nc4 \
     --tag S007G09_160926_o2b
+    
+    
+python scripts/run_o2b_pipeline_subset.py \
+    --lat-min 18.6 --lat-max 20.1 \
+    --lon-min -119.7 --lon-max -117.2 \
+    --wl-min 683 --wl-max 697 --spectral-fit-order 7 \
+    --rad-file data/TEMPO/TEMPO_RAD_L1_V03_20240708T160926Z_S007G09.nc \
+    --cldo4-file data/TEMPO/TEMPO_CLDO4_L2_V03_20240708T160926Z_S007G09.nc \
+    --no2-file data/TEMPO/TEMPO_NO2_L2_V03_20240708T160926Z_S007G09.nc \
+    --irr-file data/TEMPO/TEMPO_IRR_L1_V03_20240711T042711Z.nc \
+    --geos-file data/TEMPO/GEOS-CF.v01.rpl.sat_inst_1hr_r721x361_v72.20240708_1600z.nc4 \
+    --tag S007G09_160926_o2b_2
+    
+python scripts/run_o2b_pipeline_subset.py \
+    --lat-min 18.0 --lat-max 20.5 \
+    --lon-min -116.2 --lon-max -113.9 \
+    --wl-min 683 --wl-max 697 --spectral-fit-order 7 \
+    --rad-file data/TEMPO/TEMPO_RAD_L1_V03_20240708T160926Z_S007G09.nc \
+    --cldo4-file data/TEMPO/TEMPO_CLDO4_L2_V03_20240708T160926Z_S007G09.nc \
+    --no2-file data/TEMPO/TEMPO_NO2_L2_V03_20240708T160926Z_S007G09.nc \
+    --irr-file data/TEMPO/TEMPO_IRR_L1_V03_20240711T042711Z.nc \
+    --geos-file data/TEMPO/GEOS-CF.v01.rpl.sat_inst_1hr_r721x361_v72.20240708_1600z.nc4 \
+    --tag S007G09_160926_o2b_3
+    
+
+python scripts/run_o2b_pipeline_subset.py \
+    --lat-min 36.5 --lat-max 38.5 \
+    --lon-min -98.6 --lon-max -96.6 \
+    --wl-min 683 --wl-max 697 --spectral-fit-order 7 \
+    --rad-file data/TEMPO/TEMPO_RAD_L1_V03_20240708T184934Z_S010G06.nc \
+    --cldo4-file data/TEMPO/TEMPO_CLDO4_L2_V03_20240708T184934Z_S010G06.nc \
+    --no2-file data/TEMPO/TEMPO_NO2_L2_V03_20240708T184934Z_S010G06.nc \
+    --irr-file data/TEMPO/TEMPO_IRR_L1_V03_20240711T042711Z.nc \
+    --geos-file data/TEMPO/GEOS-CF.v01.rpl.sat_inst_1hr_r721x361_v72.20240708_1900z.nc4 \
+    --tag S010G06_160926_o2b_1 
+    
+    
 """
