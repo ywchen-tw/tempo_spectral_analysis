@@ -1563,6 +1563,8 @@ def write_spectral_fitting_3panel_plot(
     tag="",
     cf_threshold=0.2,
     rad_file=None,
+    fontsize=18,
+    dpi=200,
 ):
     """Write a geographic scatter figure: optional GOES RGB + cloud fraction + k1 + k2.
 
@@ -1573,6 +1575,15 @@ def write_spectral_fitting_3panel_plot(
     Each scatter panel plots pixels coloured by the panel value.  Pixels
     without a successful fit are excluded from k1/k2 panels but still appear
     in the cloud-fraction panel for spatial context.
+
+    Parameters
+    ----------
+    fontsize : int
+        Base font size.  Titles use fontsize, axis labels use fontsize,
+        tick labels and colorbar annotations use fontsize-2.
+        Use 18 for poster output, 12 for inline/paper figures.
+    dpi : int
+        Output PNG resolution.  200 is good for posters; 150 for screen.
     """
     import re
     import sys
@@ -1669,9 +1680,14 @@ def write_spectral_fitting_3panel_plot(
                     print(f"  Warning: GOES download skipped ({exc})", flush=True)
 
     # ── Figure layout ─────────────────────────────────────────────────────────
+    fs       = fontsize          # title / axis label size
+    fs_small = max(fontsize - 2, 8)   # tick labels and colorbar annotations
+    dot_size = max(int(fontsize * 1.8), 20)   # scatter marker size
+
     n_panels   = 4 if goes_img is not None else 3
-    fig_width  = 7 * n_panels
-    fig, axes  = plt.subplots(1, n_panels, figsize=(fig_width, 5),
+    fig_width  = 6 * n_panels
+    fig_height = max(5, fontsize * 0.15 + 0.5)   # ~7" at fontsize=18, ~5" at fontsize=12
+    fig, axes  = plt.subplots(1, n_panels, figsize=(fig_width, fig_height),
                                constrained_layout=True)
 
     scatter_axes = axes[1:] if goes_img is not None else axes
@@ -1687,25 +1703,25 @@ def write_spectral_fitting_3panel_plot(
         if title == "Cloud fraction":
             sc = ax.scatter(
                 lon[finite], lat[finite], c=values[finite],
-                s=18, cmap="Blues_r", vmin=0, vmax=1,
+                s=dot_size, cmap="Blues_r", vmin=0, vmax=1,
             )
         elif title.startswith("NO2"):
             sc = ax.scatter(lon[finite], lat[finite], c=values[finite],
-                            s=18, cmap="Reds")
+                            s=dot_size, cmap="Reds")
         else:
             vmin_val = np.nanpercentile(values[finite], 5) if finite.any() else 0
             vmax_val = np.nanpercentile(values[finite], 95) if finite.any() else 1
-            sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=18,
+            sc = ax.scatter(lon[finite], lat[finite], c=values[finite], s=dot_size,
                             cmap="viridis", vmin=vmin_val, vmax=vmax_val)
-        ax.set_title(title, fontsize=14)
-        ax.set_xlabel("Longitude", fontsize=12)
-        ax.set_ylabel("Latitude", fontsize=12)
+        ax.set_title(title, fontsize=fs)
+        ax.set_xlabel("Longitude", fontsize=fs)
+        ax.set_ylabel("Latitude", fontsize=fs)
         cbar_label = ("molecules/cm$^2$" if title.startswith("NO2")
                       else "fraction" if title == "Cloud fraction"
                       else "value")
         cb = fig.colorbar(sc, ax=ax, fraction=0.060, pad=0.04)
-        cb.ax.tick_params(labelsize=10)
-        cb.set_label(cbar_label, fontsize=12)
+        cb.ax.tick_params(labelsize=fs_small)
+        cb.set_label(cbar_label, fontsize=fs_small)
 
     # Align all scatter panels to the same lon/lat range
     ref_ax = scatter_axes[-1]
@@ -1714,7 +1730,7 @@ def write_spectral_fitting_3panel_plot(
     for ax in scatter_axes:
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
-        ax.tick_params(axis='both', which='major', labelsize=10)
+        ax.tick_params(axis='both', which='major', labelsize=fs_small-2)
 
     # ── GOES panel (leftmost) ─────────────────────────────────────────────────
     if goes_img is not None:
@@ -1729,11 +1745,11 @@ def write_spectral_fitting_3panel_plot(
         #             s=4, c='yellow', alpha=0.4, linewidths=0)
         ax0.set_xlim(xmin, xmax)
         ax0.set_ylim(ymin, ymax)
-        ax0.set_title(goes_title, fontsize=11)
-        ax0.set_xlabel("Longitude", fontsize=12)
-        ax0.set_ylabel("Latitude", fontsize=12)
-        ax0.tick_params(axis='both', which='major', labelsize=10)
+        ax0.set_title(goes_title, fontsize=fs)
+        ax0.set_xlabel("Longitude", fontsize=fs)
+        ax0.set_ylabel("Latitude", fontsize=fs)
+        ax0.tick_params(axis='both', which='major', labelsize=fs_small)
 
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return out_path
